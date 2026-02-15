@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>仙女棒点燃模拟器 Pro</title>
+    <style>
+        :root {
+            --bg-color: #0a0a0c;
+            --panel-bg: rgba(30, 30, 35, 0.95);
+            --accent-color: #ffaa00;
+            --danger-color: #ff4d4d;
+            --success-color: #2ecc71;
+            --info-color: #3498db;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        #canvas-container {
+            flex-grow: 1;
+            position: relative;
+            cursor: crosshair;
+            overflow: hidden;
+        }
+
+        canvas { display: block; }
+
+        /* 控制面板 */
+        .controls {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--panel-bg);
+            padding: 15px 25px;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            backdrop-filter: blur(15px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+            z-index: 100;
+            min-width: 450px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .slider-group {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            font-size: 13px;
+            color: #ccc;
+            background: rgba(0,0,0,0.2);
+            padding: 8px 15px;
+            border-radius: 8px;
+        }
+
+        input[type="range"] {
+            flex-grow: 1;
+            accent-color: var(--accent-color);
+            cursor: pointer;
+        }
+
+        button {
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        button:hover { background: rgba(255, 255, 255, 0.2); }
+        button.active { background: var(--accent-color); color: black; }
+        button#start-btn { background: var(--success-color); color: white; }
+        button#restart-btn { background: var(--info-color); color: white; }
+        button#reset-btn { background: var(--danger-color); color: white; }
+
+        .hint {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            color: rgba(255, 255, 255, 0.4);
+            font-size: 12px;
+            pointer-events: none;
+        }
+
+        #status {
+            position: absolute;
+            top: 150px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--accent-color);
+            background: rgba(0,0,0,0.3);
+            padding: 2px 10px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container">
+        <canvas id="mainCanvas"></canvas>
+        
+        <div class="controls" id="ui-panel">
+            <div class="button-group">
+                <button id="stick-mode" class="active">🪄 摆放仙女棒</button>
+                <button id="igniter-mode">📍 放置点燃点</button>
+                <button id="start-btn">🔥 开始燃烧</button>
+                <button id="restart-btn">♻️ 重新点燃</button>
+                <button id="reset-btn">🔄 全部重置</button>
+            </div>
+            
+            <div class="slider-group">
+                <span>燃烧速度</span>
+                <input type="range" id="speed-slider" min="0.25" max="2" step="0.25" value="1">
+                <span id="speed-val">1x</span>
+            </div>
+        </div>
+
+        <div id="status">编辑模式</div>
+        <div class="hint">提示：拖动仙女棒两端的圆点可调整长度方向 • 拖动空白处绘制新棒</div>
+    </div>
+
+<script>
+    const canvas = document.getElementById('mainCanvas');
+    const ctx = canvas.getContext('2d');
+    const statusText = document.getElementById('status');
+    const speedSlider = document.getElementById('speed-slider');
+    const speedValDisplay = document.getElementById('speed-val');
+    
+    const CONTACT_DIST = 5;   
+    const SPARK_COUNT = 6;
+    const HANDLE_RADIUS = 8; // 端点触碰半径
+
+    let sticks = [];          
+    let igniters = [];        
+    let particles = [];       
+    let mode = 'stick';       
+    let isRunning = false;
+    let isDrawing = false;
+    let isEditing = false;
+    let editTarget = null; // { stickIndex, pointType: 'start'|'end' }
+    
+    let dragStart = { x: 0, y: 0 };
+    let currentMouse = { x: 0, y: 0 };
+    
+    let burnSpeedFactor = 1.0;
+    let speedAccumulator = 0.0; 
+
+    function init() {
+        resize();
+        window.addEventListener('resize', resize);
+        
+        document.getElementById('stick-mode').onclick = (e) => setMode('stick', e.target);
+        document.getElementById('igniter-mode').onclick = (e) => setMode('igniter', e.target);
+        document.getElementById('start-btn').onclick = startSimulation;
+        document.getElementById('restart-btn').onclick = restartFire;
+        document.getElementById('reset-btn').onclick = resetAll;
+
+        speedSlider.oninput = (e) => {
+            burnSpeedFactor = parseFloat(e.target.value);
+            speedValDisplay.innerText = burnSpeedFactor + 'x';
+        };
+
+        canvas.addEventListener('mousedown', onMouseDown);
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+
+        requestAnimationFrame(loop);
+    }
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+
+    function setMode(newMode, el) {
+        mode = newMode;
+        document.querySelectorAll('.button-group button').forEach(b => b.classList.remove('active'));
+        if (el) el.classList.add('active');
+    }
+
+    function resetAll() {
+        sticks = [];
+        igniters = [];
+        particles = [];
+        isRunning = false;
+        speedAccumulator = 0;
+        statusText.innerText = "编辑模式";
+        statusText.style.color = "var(--accent-color)";
+    }
+
+    function restartFire() {
+        sticks.forEach(s => {
+            s.points.forEach(p => {
+                p.isBurnt = false;
+                p.isOnFire = false;
+            });
+        });
+        particles = [];
+        speedAccumulator = 0;
+        isRunning = true;
+        statusText.innerText = "重新燃烧中...";
+    }
+
+    function startSimulation() {
+        if (sticks.length === 0 && igniters.length === 0) return;
+        isRunning = true;
+        speedAccumulator = 0;
+        statusText.innerText = "正在燃烧...";
+        statusText.style.color = "#ffaa00";
+    }
+
+    function onMouseDown(e) {
+        if (isRunning) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        if (mode === 'stick') {
+            // 首先检查是否点击到了现有仙女棒的端点
+            let foundHandle = false;
+            for (let i = 0; i < sticks.length; i++) {
+                const s = sticks[i];
+                const startP = s.points[0];
+                const endP = s.points[s.points.length - 1];
+
+                if (Math.hypot(x - startP.x, y - startP.y) < HANDLE_RADIUS + 5) {
+                    isEditing = true;
+                    editTarget = { index: i, type: 'start' };
+                    foundHandle = true;
+                    break;
+                }
+                if (Math.hypot(x - endP.x, y - endP.y) < HANDLE_RADIUS + 5) {
+                    isEditing = true;
+                    editTarget = { index: i, type: 'end' };
+                    foundHandle = true;
+                    break;
+                }
+            }
+
+            if (!foundHandle) {
+                isDrawing = true;
+                dragStart = { x, y };
+            }
+        } else {
+            igniters.push({ x, y });
+        }
+    }
+
+    function onMouseMove(e) {
+        const rect = canvas.getBoundingClientRect();
+        currentMouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+        if (isEditing && editTarget) {
+            updateStickGeometry(editTarget.index, editTarget.type, currentMouse.x, currentMouse.y);
+        }
+
+        // 改变鼠标手势
+        if (!isRunning && mode === 'stick') {
+            let overHandle = false;
+            sticks.forEach(s => {
+                const startP = s.points[0];
+                const endP = s.points[s.points.length - 1];
+                if (Math.hypot(currentMouse.x - startP.x, currentMouse.y - startP.y) < HANDLE_RADIUS + 5 ||
+                    Math.hypot(currentMouse.x - endP.x, currentMouse.y - endP.y) < HANDLE_RADIUS + 5) {
+                    overHandle = true;
+                }
+            });
+            canvas.style.cursor = overHandle ? 'grab' : 'crosshair';
+            if (isEditing) canvas.style.cursor = 'grabbing';
+        } else {
+            canvas.style.cursor = 'crosshair';
+        }
+    }
+
+    function updateStickGeometry(index, type, mouseX, mouseY) {
+        const s = sticks[index];
+        const startP = s.points[0];
+        const endP = s.points[s.points.length - 1];
+
+        let x1, y1, x2, y2;
+
+        if (type === 'start') {
+            x1 = mouseX; y1 = mouseY;
+            x2 = endP.x; y2 = endP.y;
+        } else {
+            x1 = startP.x; y1 = startP.y;
+            x2 = mouseX; y2 = mouseY;
+        }
+
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const length = Math.hypot(dx, dy);
+        const angle = Math.atan2(dy, dx);
+        const segments = Math.max(5, Math.floor(length / 2));
+
+        const newPoints = [];
+        for (let i = 0; i <= segments; i++) {
+            const ratio = i / segments;
+            newPoints.push({
+                x: x1 + dx * ratio,
+                y: y1 + dy * ratio,
+                isBurnt: false,
+                isOnFire: false
+            });
+        }
+        s.points = newPoints;
+        s.angle = angle;
+        s.length = length;
+        s.origin = { x: x1, y: y1 };
+    }
+
+    function onMouseUp(e) {
+        if (isDrawing) {
+            const dx = currentMouse.x - dragStart.x;
+            const dy = currentMouse.y - dragStart.y;
+            const length = Math.hypot(dx, dy);
+            if (length > 10) {
+                createStick(dragStart.x, dragStart.y, Math.atan2(dy, dx), length);
+            }
+        }
+        isDrawing = false;
+        isEditing = false;
+        editTarget = null;
+    }
+
+    function createStick(x, y, angle, length) {
+        const points = [];
+        const segments = Math.floor(length / 2); 
+        for (let i = 0; i <= segments; i++) {
+            const ratio = i / segments;
+            points.push({
+                x: x + Math.cos(angle) * length * ratio,
+                y: y + Math.sin(angle) * length * ratio,
+                isBurnt: false,
+                isOnFire: false
+            });
+        }
+        sticks.push({ points, angle, length, origin: { x, y } });
+    }
+
+    function spawnSparks(x, y) {
+        for (let i = 0; i < SPARK_COUNT; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = Math.random() * 4 + 1;
+            particles.push({
+                x, y,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - Math.random() * 2,
+                life: 1.0,
+                decay: Math.random() * 0.04 + 0.02,
+                color: Math.random() > 0.3 ? `255, ${160 + Math.random() * 95}, 60` : '255, 255, 255'
+            });
+        }
+    }
+
+    function update() {
+        if (!isRunning) return;
+
+        igniters.forEach(ig => {
+            sticks.forEach(s => {
+                s.points.forEach(p => {
+                    if (!p.isBurnt && Math.hypot(p.x - ig.x, p.y - ig.y) < 12) p.isOnFire = true;
+                });
+            });
+        });
+
+        speedAccumulator += burnSpeedFactor;
+        while (speedAccumulator >= 1) {
+            speedAccumulator -= 1;
+            let firesThisStep = [];
+            sticks.forEach(s => s.points.forEach((p, idx) => { if (p.isOnFire) firesThisStep.push({ s, p, idx }); }));
+
+            firesThisStep.forEach(f => {
+                spawnSparks(f.p.x, f.p.y);
+                f.p.isBurnt = true;
+                f.p.isOnFire = false;
+                if (f.idx > 0 && !f.s.points[f.idx - 1].isBurnt) f.s.points[f.idx - 1].isOnFire = true;
+                if (f.idx < f.s.points.length - 1 && !f.s.points[f.idx + 1].isBurnt) f.s.points[f.idx + 1].isOnFire = true;
+                sticks.forEach(os => {
+                    if (os === f.s) return;
+                    os.points.forEach(op => {
+                        if (!op.isBurnt && !op.isOnFire && Math.hypot(f.p.x - op.x, f.p.y - op.y) < CONTACT_DIST) op.isOnFire = true;
+                    });
+                });
+            });
+        }
+
+        for (let i = particles.length - 1; i >= 0; i--) {
+            const p = particles[i];
+            p.x += p.vx; p.y += p.vy; p.vy += 0.18; p.life -= p.decay;
+            if (p.life <= 0) particles.splice(i, 1);
+        }
+
+        if (!sticks.some(s => s.points.some(p => p.isOnFire)) && particles.length === 0) {
+            isRunning = false;
+            statusText.innerText = "燃烧完毕";
+        }
+    }
+
+    function draw() {
+        ctx.fillStyle = '#0a0a0c';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // 1. 绘制仙女棒
+        sticks.forEach((s, idx) => {
+            ctx.strokeStyle = '#2a2a2f';
+            ctx.lineWidth = 4;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(s.points[0].x, s.points[0].y);
+            ctx.lineTo(s.points[s.points.length-1].x, s.points[s.points.length-1].y);
+            ctx.stroke();
+
+            ctx.strokeStyle = '#050505';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            let started = false;
+            s.points.forEach(p => {
+                if (p.isBurnt) {
+                    if (!started) { ctx.moveTo(p.x, p.y); started = true; }
+                    else ctx.lineTo(p.x, p.y);
+                } else started = false;
+            });
+            ctx.stroke();
+
+            // 火头
+            s.points.forEach(p => {
+                if (p.isOnFire) {
+                    ctx.fillStyle = '#fff';
+                    ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); ctx.fill();
+                    const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 18);
+                    grad.addColorStop(0, 'rgba(255, 220, 100, 0.7)');
+                    grad.addColorStop(1, 'rgba(255, 100, 0, 0)');
+                    ctx.fillStyle = grad;
+                    ctx.beginPath(); ctx.arc(p.x, p.y, 18, 0, Math.PI * 2); ctx.fill();
+                }
+            });
+
+            // 绘制编辑手柄 (仅在非运行状态且模式匹配时)
+            if (!isRunning && mode === 'stick') {
+                const startP = s.points[0];
+                const endP = s.points[s.points.length - 1];
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+                ctx.beginPath(); ctx.arc(startP.x, startP.y, 5, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.arc(endP.x, endP.y, 5, 0, Math.PI*2); ctx.fill();
+                
+                // 突出显示当前拖拽的
+                if (isEditing && editTarget.index === idx) {
+                    ctx.strokeStyle = 'var(--accent-color)';
+                    ctx.lineWidth = 1;
+                    const targetP = editTarget.type === 'start' ? startP : endP;
+                    ctx.beginPath(); ctx.arc(targetP.x, targetP.y, 8, 0, Math.PI*2); ctx.stroke();
+                }
+            }
+        });
+
+        // 2. 绘制粒子
+        particles.forEach(p => {
+            ctx.fillStyle = `rgba(${p.color}, ${p.life})`;
+            ctx.beginPath(); ctx.arc(p.x, p.y, 1.2, 0, Math.PI*2); ctx.fill();
+        });
+
+        // 3. 绘制引燃火种 (顶层)
+        igniters.forEach(ig => {
+            const glow = isRunning ? 2 : 5 + Math.sin(Date.now() / 150) * 4;
+            ctx.shadowBlur = glow; ctx.shadowColor = 'red';
+            ctx.fillStyle = isRunning ? '#311' : '#ff4d4d';
+            ctx.beginPath(); ctx.arc(ig.x, ig.y, 6, 0, Math.PI * 2); ctx.fill();
+            ctx.shadowBlur = 0;
+        });
+
+        // 4. 预览绘制
+        if (isDrawing) {
+            ctx.strokeStyle = 'rgba(255, 170, 0, 0.5)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 4]);
+            ctx.beginPath();
+            ctx.moveTo(dragStart.x, dragStart.y);
+            ctx.lineTo(currentMouse.x, currentMouse.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+    }
+
+    function loop() {
+        update();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    init();
+</script>
+</body>
+</html>
